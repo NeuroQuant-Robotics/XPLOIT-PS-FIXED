@@ -210,7 +210,10 @@ To complete this challenge, we need to:
 (72#%^(101#%^(108#%^(108#%^(111#%^`
 ```
 
-**Team Name:**
-```wut
-[To be written after understanding the language]
+**Team Name: MEW**
+```
+Aditya Dutt Pandey
+Umyal dixit 
+kashish
+
 ```
