@@ -71,8 +71,6 @@ Modified `P_DamageMobj()` to ensure mutual safety between the player and the com
 
 ## Steps to Recreate and Build
 
-Since modern macOS environments (ARM64) require specific dependencies and architecture configurations to build legacy C code natively, using Docker is the cleanest way to compile the modified engine.
-
 ### Prerequisites
 - Docker installed and running
 - The `freedoom1.wad` file must be inside the `chocolate-doom` folder.
