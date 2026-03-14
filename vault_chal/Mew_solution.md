@@ -1,145 +1,246 @@
-XPLOIT Vault Challenge – Writeup
+# XPLOIT Vault Challenge – Writeup
 
-Team: mew
+**Team:** mew
 
-1. Initial Recon
+---
 
-The challenge provided a single binary named chal. The objective was to make it print:
+# 1. Initial Recon
 
+The challenge provided a single binary named `chal`.
+The objective was to make the program print the following message:
+
+```
 VAULT SYSTEM CLEARED.
 All authentication layers bypassed successfully.
-File Inspection
+```
 
-We first identified the binary type.
+## File Inspection
 
+The first step was identifying the binary type.
+
+```bash
 file chal
+```
 
 Output:
 
+```
 ELF 64-bit LSB pie executable, x86-64, dynamically linked, not stripped
+```
 
 Observations:
 
-64-bit Linux ELF
+* 64-bit Linux ELF executable
+* Position Independent Executable (PIE)
+* Dynamically linked
+* Not stripped, meaning function names are preserved
 
-PIE enabled
+The presence of symbols simplifies reverse engineering.
 
-Dynamically linked
+---
 
-Not stripped, meaning function names are visible.
+## Strings Analysis
 
-Strings Analysis
+To identify potential clues inside the binary, embedded strings were extracted.
 
-To locate useful clues, we extracted embedded strings.
-
+```bash
 strings chal | grep -i "vault\|clear\|bypass"
+```
 
-Important strings found:
+Important strings discovered:
 
+```
 VAULT SYSTEM CLEARED.
 All authentication layers bypassed successfully.
 unlock_vault_sequence
 [-] FATAL: Kernel level debugger detected
+```
 
-This indicated that a function named unlock_vault_sequence likely contained the success logic.
+Observations:
 
-2. Function Map
+* The success message exists inside the binary.
+* A function named `unlock_vault_sequence` likely contains the logic responsible for printing it.
+* The debugger detection message suggests the binary implements anti-debugging checks.
 
-Using:
+---
 
+# 2. Function Map
+
+The binary was disassembled using:
+
+```bash
 objdump -d chal -M intel
+```
 
-we analyzed the main functions.
+Since the binary is not stripped, several functions were easily identifiable.
 
-main (0x1b0e)
+## main (0x1b0e)
 
-Entry point of the program. It sequentially calls several initialization and verification routines.
+This is the program entry point.
 
-security_watchdog (0x18ef)
+It calls several initialization and verification functions before reaching authentication logic, including:
 
-Implements anti-debugging protection using:
+* `emit_system_diagnostics`
+* `initialize_telemetry`
+* `verify_network_cert`
+* `security_watchdog`
+* `user_authentication_module`
 
+These simulate multiple security layers before the vault unlock sequence.
+
+## security_watchdog (0x18ef)
+
+This function implements anti-debugging protection.
+
+It uses:
+
+```c
 ptrace(PTRACE_TRACEME)
+```
 
-If debugging is detected, the program exits.
+If debugging is detected, the program exits with:
 
-user_authentication_module (0x1936)
+```
+[-] FATAL: Kernel level debugger detected
+```
 
-Handles authentication but does not lead to the vault unlock function, preventing the success state from being reached.
+Conclusion: This function prevents debugging but does not directly control vault unlocking.
 
-unlock_vault_sequence (0x19f2)
+## user_authentication_module (0x1936)
 
-This function contains the final success behavior.
+Handles user authentication logic.
 
-It:
+However, analysis showed that execution from this function does not naturally reach the vault unlock function, preventing the success message from appearing.
 
-Prompts for an unlock code.
+Conclusion: This function blocks the execution path to the success logic.
 
-Computes an expected value using global variables.
+## unlock_vault_sequence (0x19f2)
 
-Compares the user input with that value.
+This function contains the final vault unlocking logic.
 
-If correct, the program prints the VAULT SYSTEM CLEARED message.
+The function:
 
-The unlock code is calculated as:
+1. Prompts the user for an unlock code
+2. Computes the expected value using runtime variables
+3. Compares user input against the computed value
 
+If the values match, the program prints the vault cleared message.
+
+The unlock code is calculated using:
+
+```
 unlock_code = g_pid_seed XOR g_vault_byte
-3. Changes Made
+```
 
-To reliably reach the success state, we patched the binary using a Python script (patch2.py).
+Where:
 
-Change 1 – Redirect Execution
+* `g_pid_seed` is derived from runtime information
+* `g_vault_byte` is stored in the `.data` section
 
-Location: 0x1936
+---
+
+# 3. Changes Made
+
+To reach the success state consistently, the binary was patched using a Python script (`patch2.py`).
+
+Two targeted modifications were applied.
+
+## Change 1 – Redirect Execution to Vault Unlock Logic
+
+Location: `0x1936`
 
 Original behavior:
-The program executed user_authentication_module, which prevented reaching the unlock logic.
+
+Execution entered `user_authentication_module`, which prevented reaching the vault unlock sequence.
+
+Problem:
+
+The unlock function existed in the binary but was not reached through normal execution flow.
 
 Modification:
-Replaced the instruction with an unconditional jump to unlock_vault_sequence.
 
+The instruction at this location was replaced with an unconditional jump to the vault unlock function.
+
+```
 JMP unlock_vault_sequence
+```
 
-This forces the program to execute the vault logic directly.
+Opcode used:
 
-Change 2 – Disable Unlock Code Verification
+```
+E9 <relative offset>
+```
 
-Inside unlock_vault_sequence, the user input is checked using a conditional jump:
+Result:
 
-75 64   (JNE -> failure)
+Execution now jumps directly to `unlock_vault_sequence`, bypassing the blocking authentication logic.
 
-If the input does not match the expected code, execution jumps to a failure routine.
+## Change 2 – Disable Unlock Code Verification
+
+Inside `unlock_vault_sequence`, the program compares the user input with the expected unlock code.
+
+Original instruction:
+
+```
+75 64
+```
+
+This is a `JNE` instruction that jumps to a failure path when the input is incorrect.
+
+Problem:
+
+Without calculating the exact unlock code, the program would always take the failure branch.
 
 Modification:
 
+The instruction was replaced with NOP instructions.
+
+```
 75 64  →  90 90
+```
 
-Replacing the conditional jump with NOP instructions removes the failure branch.
+Result:
 
-Result: the program proceeds to the success block regardless of input.
+The conditional jump is removed, allowing execution to continue to the success block regardless of input.
 
-4. Unlock Code
+---
 
-Originally the unlock code is computed as:
+# 4. Unlock Code
 
+Originally, the unlock code is computed using:
+
+```
 unlock_code = g_pid_seed XOR g_vault_byte
+```
 
-Because the verification branch was patched out, the program no longer checks this value.
+Normally, the user must provide this exact value.
 
-Therefore any input can be provided.
+However, after removing the verification branch, the binary no longer validates the input.
+
+Therefore, any input value can be used.
 
 Example input used:
 
+```
 123
-5. Final Output
+```
 
-Running the patched binary:
+---
 
+# 5. Final Output
+
+After applying the patches, the binary was executed.
+
+Command used:
+
+```bash
 python3 patch2.py
 echo "123" | ./chal_patched
+```
 
 Output:
 
+```
 Initializing XPLOIT Vault System...
 [SYS] kernel handshake initialised.
 
@@ -147,6 +248,25 @@ Vault Unlock Code:
 ***************************************************
   VAULT SYSTEM CLEARED.
   All authentication layers bypassed successfully.
+  Document your methodology and proceed to
+  the next question.
 ***************************************************
+```
 
-This confirms that the vault unlock sequence executed successfully.
+This confirms that the vault unlock sequence was successfully triggered.
+
+---
+
+# Conclusion
+
+Through static analysis and targeted binary patching, the hidden vault unlock logic was identified and executed successfully.
+
+Key steps included:
+
+* Inspecting the binary using standard analysis tools
+* Mapping functions through disassembly
+* Identifying the vault unlock routine
+* Redirecting execution to that routine
+* Removing the conditional failure branch
+
+These modifications allow the program to consistently reach the success state and produce the required output.
